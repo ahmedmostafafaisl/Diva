@@ -1,0 +1,23 @@
+[27-Jul-2025 22:38:24 UTC] PHP Fatal error:  Uncaught Error: Call to undefined function Symfony\Component\ErrorHandler\ErrorRenderer\highlight_file() in /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php:251
+Stack trace:
+#0 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/Resources/views/trace.html.php(36): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->fileExcerpt()
+#1 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(339): include('/home/khitsolu/...')
+#2 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/Resources/views/traces.html.php(48): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->include()
+#3 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(339): include('/home/khitsolu/...')
+#4 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/Resources/views/exception.html.php(54): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->include()
+#5 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(339): include('/home/khitsolu/...')
+#6 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/Resources/views/exception_full.html.php(35): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->include()
+#7 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(339): include('/home/khitsolu/...')
+#8 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(138): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->include()
+#9 /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php(70): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->renderException()
+#10 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(708): Symfony\Component\ErrorHandler\ErrorRenderer\HtmlErrorRenderer->render()
+#11 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(682): Illuminate\Foundation\Exceptions\Handler->renderExceptionWithSymfony()
+#12 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(663): Illuminate\Foundation\Exceptions\Handler->renderExceptionContent()
+#13 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(642): Illuminate\Foundation\Exceptions\Handler->convertExceptionToResponse()
+#14 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(556): Illuminate\Foundation\Exceptions\Handler->prepareResponse()
+#15 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php(473): Illuminate\Foundation\Exceptions\Handler->renderExceptionResponse()
+#16 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Http/Kernel.php(509): Illuminate\Foundation\Exceptions\Handler->render()
+#17 /home/khitsolu/faisal.kh-itsolutions.com/vendor/laravel/framework/src/Illuminate/Foundation/Http/Kernel.php(148): Illuminate\Foundation\Http\Kernel->renderException()
+#18 /home/khitsolu/faisal.kh-itsolutions.com/public/index.php(51): Illuminate\Foundation\Http\Kernel->handle()
+#19 {main}
+  thrown in /home/khitsolu/faisal.kh-itsolutions.com/vendor/symfony/error-handler/ErrorRenderer/HtmlErrorRenderer.php on line 251

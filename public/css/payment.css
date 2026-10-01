@@ -1,0 +1,19 @@
+.payment-status .icon-circle {
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(135deg, #f44336, #ff6b6b);
+}
+
+.payment-status .status-icon {
+    width: 45px;
+    height: 45px;
+}
+
+.payment-status .btn-primary {
+    font-weight: 600;
+    font-size: 16px;
+}

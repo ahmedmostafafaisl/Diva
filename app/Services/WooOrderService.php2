@@ -1,0 +1,1589 @@
+<?php
+
+namespace App\Services;
+use App\Models\User;
+use App\Models\Zone;
+use App\Models\Shipping;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Http;
+use App\Models\Product;
+use App\Models\Address2;
+use App\Http\Resources\Refactor\Product\NewProductResource;
+use App\Http\Resources\Refactor\Product\SinglePostResource;
+use Illuminate\Support\Facades\Auth;
+use App\Models\FollowRequest;
+use App\Models\UserFriend;
+
+class WooOrderService
+{
+    public function getOrderByPhone($phone)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wc/v3/orders', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'search' => $phone
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $orders = $response->json();
+
+        if (empty($orders)) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ($orders as $order) {
+            // Check if order is completed and date_modified is within last 3 days
+            $refundStatus = false;
+            if ($order['status'] == 'completed') {
+                $modifiedDate = new \DateTime($order['date_modified']);
+                $threeDaysAgo = new \DateTime('-3 days');
+                if ($modifiedDate >= $threeDaysAgo) {
+                    $refundStatus = true;
+                }
+            }
+
+            $result[] = [
+                'id' => $order['id'],
+                'user' => [
+                    'id' => $order['customer_id'],
+                    'username' => $order['billing']['first_name'] . ' ' . $order['billing']['last_name'],
+                    'phone' => '+' . $order['billing']['phone'],
+                    'email' => $order['billing']['email'],
+                    'first_name' => $order['billing']['first_name'],
+                    'last_name' => $order['billing']['last_name'],
+                    'gender' => 'female',
+                    'birth_date' => '2015-12-06', // placeholder
+                ],
+                'address' => [
+                    'id' => 2,
+                    'address_1' => $order['billing']['address_1'],
+                    'address_2' => $order['billing']['address_2'],
+                    'city' => $order['billing']['city'],
+                    'state' => $order['billing']['state'],
+                    'postcode' => $order['billing']['postcode'],
+                    'country' => $order['billing']['country'],
+                ],
+                'currency' => $order['currency'],
+                'tax' => $order['total_tax'],
+                'total_amount' => count($order['line_items']),
+                'total_price' => $order['total'],
+                'subtotal' => $order['total'] + $order['discount_total'] ?? null,
+                'discount_total' => $order['discount_total'],
+                'total_tax' => $order['total_tax'],
+                'billing_email' => $order['billing']['email'],
+                'payment_method' => $order['payment_method'],
+                'shipment_note' => $order['customer_note'],
+                'status' => $order['status'],
+                'payment_status' => 'paid',
+                'Shipping_company' => "JT&T",
+                "Tracking_number" => collect($order['meta_data'])
+                    ->firstWhere('key', 'jtawb')['value'] ?? null,
+                'refund_status' => $order['status'] == 'completed' ? $refundStatus : null,
+                'products' => array_map(function ($item) {
+                    return [
+                        'id' => $item['product_id'],
+                        'item_id' => $item['id'],
+                        'name' => strip_tags($item['name']),
+                        'price' => $item['total'] + ($item['total'] * 0.15),
+                        'quantity' => $item['quantity'],
+                        'description' => $item['short_description'],
+                        'image' =>  str_replace('3.73.173.183', 'centerialmall.com', $item['image']['src']) ?? null,
+                    ];
+                }, $order['line_items']),
+                'created_at' => $order['date_created'],
+                'updated_at' => $order['date_modified'],
+            ];
+        }
+        return $result;
+    }
+
+    public function SendOrder($data)
+    {
+        $custom = $this->getUserByPhone($data['user']['email'], $data['user_phone'], $data['user'], $data['address']);
+        ($custom_id = $custom['id']);
+        $lineItems = [];
+
+        foreach ($data['products'] as $product) {
+            $price = $product->product['price'];
+            $regularPrice = $product->product['regular_price'] ?? null;
+            $quantity = $product['quantity'];
+
+            // Calculate total and tax
+            $total = $price * $quantity / 1.15;
+            $totalTax = $price * 0.15 * $quantity;
+
+            // Calculate subtotal tax using regular_price if exists
+            $basePrice = $regularPrice !== null ? $regularPrice : $price;
+            $subtotalTax = $basePrice * 0.15 * $quantity;
+            $subtotal = $basePrice  * $quantity;
+            $subtotal = $basePrice  * $quantity / 1.15;
+            $item = [
+                'product_id' => $product['product_id'],
+                'quantity' => $quantity,
+                "subtotal" => number_format($subtotal, 2, '.', ''),
+                // "subtotal_tax" => number_format($subtotalTax, 2, '.', ''),
+                "total" => number_format($total, 2, '.', ''),
+                // "total_tax" => number_format($totalTax, 2, '.', ''),
+            ];
+
+            if (isset($product['variation_id'])) {
+                $item['variation_id'] = $product['variation_id'];
+            }
+
+            $lineItems[] = $item;
+        }
+
+        $data = [
+            'payment_method' => $data['payment_method'] ?? 'bacs',
+            'payment_method_title' => $data['payment_method'] ?? 'Direct Bank Transfer',
+            'transaction_id' => $data['payment_id'] ?? '',
+            'set_paid' => true,
+            'currency' => "SAR",
+            'subtotal' => $data['subtotal'],
+            // 'subtotal_tax' => $data['subtotal_tax'],
+            'total' => ($data['total_price']) / 1.15,
+            // 'total_tax' => $data['total_tax'],
+            'discount_total' => $data['discount_total'],
+            'customer_id' => $custom_id,
+            'customer_note' => "Test Order" ?? '',
+            'shipping_tax' => $data['shipping_tax'] ?? 0,
+            'billing' => [
+                'first_name' => $data['user']['first_name'] ?? '   ',
+                'last_name' => $data['user']['last_name'] ?? ' ',
+                'address_1' => $data['address']['street'] ?? '   ',
+                'address_2' => $data['address']['location_note'] ?? '',
+                'city' => $data['address']['city'] ?? '',
+                'state' => $data['address']['state'] ?? ' ',
+                'country' => $data['address']['country'] ?? ' ',
+                'email' => $data['user']['email'] ?? '',
+                'phone' => $data['user_phone'] ?? ''
+            ],
+            'shipping' => [
+                'first_name' => $data['user']['first_name'] ?? '   ',
+                'last_name' => $data['user']['last_name'] ?? ' ',
+                'address_1' => $data['address']['street'] ?? '   ',
+                'address_2' => $data['address']['location_note'] ?? '',
+                'city' => $data['address']['city'] ?? '',
+                'state' => $data['address']['state'] ?? ' ',
+                'country' => $data['address']['country'] ?? ' ',
+            ],
+            'line_items' =>  $lineItems,
+            'tax_lines' => [
+                'id' => '1987',
+                'rate_code' => "SA-ضريبة القيمة المضافة-1",
+                'rate_id' => 1,
+                'label' => "ضريبة القيمة المضافة",
+                'rate_percent' => 15,
+            ]
+        ];
+        // dd($data);
+        $result = [];
+        /////////////
+        $woocommerceUrl = 'https://3.73.173.183/wp-json/wc/v3/orders';
+        $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+        $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+        $response = Http::withOptions([
+            'verify' => false
+        ])->withBasicAuth($consumerKey, $consumerSecret)
+            ->withHeaders([
+                'Content-Type' => 'application/json',
+
+            ])
+            ->post($woocommerceUrl, $data);
+        $order = $response;
+        $result[] = [
+            'id' => $order['id'],
+            'user' => [
+                'id' => $order['customer_id'],
+                'username' => $order['billing']['first_name'] . ' ' . $order['billing']['last_name'],
+                'phone' =>   $order['billing']['phone'],
+                'email' => $order['billing']['email'],
+                'first_name' => $order['billing']['first_name'],
+                'last_name' => $order['billing']['last_name'],
+                'gender' => 'female',
+                'birth_date' => '2015-12-06', // placeholder
+            ],
+            'address' => [
+                'id' => 2,
+                'address_1' => $order['billing']['address_1'],
+                'address_2' => $order['billing']['address_2'],
+                'city' => $order['billing']['city'],
+                'state' => $order['billing']['state'],
+                'postcode' => $order['billing']['postcode'],
+                'country' => $order['billing']['country'],
+            ],
+            'currency' => $order['currency'],
+            'tax' => $order['total_tax'],
+            'total_amount' => count($order['line_items']),
+            'total_price' => $order['total'],
+            'subtotal' => ($order['total']) + $order['discount_total'] ?? null,
+            'discount_total' => $order['discount_total'],
+            'total_tax' => $order['total_tax'],
+            'billing_email' => $order['billing']['email'],
+            'payment_method' => $order['payment_method'],
+            'shipment_note' => $order['customer_note'],
+            'status' => $order['status'],
+            'payment_status' => 'paid',
+            'Shipping_company' => "JT&T",
+            "Tracking_number" => collect($order['meta_data'])
+                ->firstWhere('key', 'jtawb')['value'] ?? null,
+            // 'refund_status' => $order['status'] == 'completed' ? $refundStatus : null,
+            'products' => array_map(function ($item) {
+                return [
+                    'id' => $item['product_id'],
+                    'item_id' => $item['id'],
+                    'name' => strip_tags($item['name']),
+                    'price' => $item['total'],
+                    'quantity' => $item['quantity'],
+                    'description' => $item['short_description'],
+                    'image' =>  str_replace('3.73.173.183', 'centerialmall.com', $item['image']['src']) ?? null,
+                ];
+            }, $order['line_items']),
+            'created_at' => $order['date_created'],
+            'updated_at' => $order['date_modified'],
+        ];
+        return ($result);
+    }
+
+    public function refundMultipleProducts($orderId, array $items, $amount, $reason)
+    {
+        $woocommerceUrl = "https://3.73.173.183/wp-json/wc/v3/orders/{$orderId}/refunds";
+        $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+        $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+        $response = Http::withOptions([
+            'verify' => false
+        ])->withBasicAuth($consumerKey, $consumerSecret)
+            ->withHeaders([
+                'Content-Type' => 'application/json',
+            ])
+            ->post($woocommerceUrl, [
+                'amount' => $amount,
+                'reason' => $reason ?? 'Multiple items refund',
+                'line_items' => $items, // expects array of items
+                'refund_payment' => false,
+                'api_refund' => false
+            ]);
+
+        if ($response->successful()) {
+            return $response->json();
+        }
+        throw new \Exception("Refund failed: " . $response->body());
+    }
+
+    public function fetchAndStoreAllShippings()
+    {
+        $zones = Zone::all();
+        foreach ($zones as $zone) {
+            $zoneId = $zone->id;
+            $this->fetchAndStoreShippings($zoneId);
+        }
+        return true;
+    }
+    public function fetchAndStoreShippings(int $zoneId)
+    {
+        $apiUrl = 'https://3.73.173.183/wp-json/wc/v3/shipping/zones';
+        $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+        $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->withBasicAuth($consumerKey, $consumerSecret)
+            ->get("{$apiUrl}/{$zoneId}/methods");
+
+        if ($response->successful()) {
+            // Loop through shipping methods and store them
+            foreach ($response->json() as $shipping) {
+                Shipping::updateOrCreate(
+                    ['instance_id' => $shipping['instance_id']],
+                    [
+                        'title' => $shipping['title'] ?? '',
+                        'method_title' => $shipping['method_title'] ?? '',
+                        'method_description' => $shipping['method_description'] ?? '',
+                        'order' => $shipping['order'] ?? null,
+                        'enabled' => $shipping['enabled'] ?? false,
+                        'cost' => $shipping['settings']['cost']['value'] ?? 0,
+                        'tax' => $shipping['settings']['tax_status']['value'] ?? 0,
+                    ]
+                );
+            }
+
+            return true;
+        }
+
+        throw new \Exception("Failed to fetch shipping methods for zone {$zoneId}: " . $response->body());
+    }
+
+
+    // user data
+    public function userProfile($data)
+    {
+        $data['phone'] = str_replace('+', '', $data->phone);
+        return $this->checkCustomer($data);
+    }
+    // check customer data  on crm
+    public function checkCustomer($data)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wc/v3/customers', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'search' =>  $data['phone']
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $customers = $response->json();
+
+        if (!(empty($customers))) {
+            $firstCustomer = collect($customers)->first();
+            return [
+                'id' => $firstCustomer['id'],
+                'username' => $firstCustomer['username'],
+                'phone' => $firstCustomer['billing']['phone'] ?? null,
+                'email' => $firstCustomer['email'],
+                'first_name' => $firstCustomer['first_name'],
+                'last_name' => $firstCustomer['last_name'],
+                'gender' => $firstCustomer['gender'] ?? null,
+                'birth_date' => $firstCustomer['birth_date'] ?? null,
+            ];
+        }
+
+        return  $customer = $response->json();
+    }
+
+    public function createOrUpdateCustomer($data)
+    {
+        $phone = isset($data['phone']) ? str_replace('+', '', $data['phone']) : null;
+        $payload = [
+            'email' => $data['email'] ?? null,
+            'first_name' => $data['first_name'] ?? null,
+            'last_name' => $data['last_name'] ?? null,
+            'gender' => $data['gender'] ?? null,
+            'password' => $data['password'] ?? Str::random(10),
+            'billing' => [
+                'first_name' => $data['first_name'] ?? null,
+                'last_name' => $data['last_name'] ?? null,
+                'email' => $data['email'] ?? null,
+                'phone' => $phone,
+                'address_1' => $data['address_1'] ?? '',
+                'address_2' => $data['address_2'] ?? '',
+                'city' => $data['city'] ?? '',
+                'state' => $data['state'] ?? '',
+                'country' => $data['country'] ?? '',
+            ],
+            'shipping' => [
+                'first_name' => $data['first_name'] ?? null,
+                'last_name' => $data['last_name'] ?? null,
+                'address_1' => $data['address_1'] ?? '',
+                'address_2' => $data['address_2'] ?? '',
+                'city' => $data['city'] ?? '',
+                'state' => $data['state'] ?? '',
+                'country' => $data['country'] ?? '',
+            ],
+        ];
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wc/v3/customers', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'search' =>  $phone
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+
+        if (!(empty($customers))) {
+            $customers = $response->json();
+            $firstCustomer = collect($customers)->first();
+
+            $woocommerceUrl = 'https://3.73.173.183/wp-json/wc/v3/customers/' . $firstCustomer['id'];
+            $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+            $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+            $response = Http::withOptions([
+                'verify' => false
+            ])->withBasicAuth($consumerKey, $consumerSecret)
+                ->withHeaders([
+                    'Content-Type' => 'application/json',
+                ])
+                ->put($woocommerceUrl, $payload);
+
+            if (!$response->successful()) {
+                return $response;
+            }
+
+            $customers = $response->json();
+            $firstCustomer = collect($customers)->first();
+            return [
+                'id' => $firstCustomer['id'],
+                'username' => $firstCustomer['username'],
+                'phone' => $firstCustomer['billing']['phone'] ?? null,
+                'email' => $firstCustomer['email'],
+                'first_name' => $firstCustomer['first_name'],
+                'last_name' => $firstCustomer['last_name'],
+                'gender' => $firstCustomer['gender'] ?? null,
+                'birth_date' => $firstCustomer['birth_date'] ?? null,
+            ];
+        }
+
+        // Clean null values from entire payload
+        $cleanedPayload = $this->removeNullValues($payload);
+        $woocommerceUrl = 'https://3.73.173.183/wp-json/wc/v3/customers';
+        $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+        $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+        $response = Http::withOptions([
+            'verify' => false
+        ])->withBasicAuth($consumerKey, $consumerSecret)
+            ->withHeaders([
+                'Content-Type' => 'application/json',
+            ])
+            ->post($woocommerceUrl, $payload);
+
+        if (!$response->successful() || isset($response['data']['status']) && $response['data']['status'] == 400) {
+            return   $response = [
+                "code" => $response['code'],
+                "status" => $response['data']['status']
+            ];
+        }
+
+        $customers = $response->json();
+
+        return [
+            'id' => $customers['id'],
+            'username' => $customers['username'],
+            'phone' => $customers['billing']['phone'] ?? null,
+            'email' => $customers['email'],
+            'first_name' => $customers['first_name'],
+            'last_name' => $customers['last_name'],
+            'gender' => $customers['gender'] ?? null,
+            'birth_date' => $customers['birth_date'] ?? null,
+        ];
+    }
+    private function removeNullValues(array $array): array
+    {
+        return array_filter($array, function ($value) {
+            if (is_array($value)) {
+                return !empty($this->removeNullValues($value));
+            }
+            return !is_null($value);
+        });
+    }
+
+    public function getUserByPhone($email, $phone, $user, $address)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wc/v3/customers', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'search' => $phone
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $customer = $response->json();
+        if (!empty($customer)) {
+            return $customer[0];
+        }
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wc/v3/customers', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'search' => $email
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $customer = $response->json();
+        if (!empty($customer)) {
+            return $customer[0];
+        }
+        if (empty($customer)) {
+            $payload = [
+                'email' => $user['email'] ?? null,
+                'first_name' => $user['first_name'] ?? null,
+                'last_name' => $user['last_name'] ?? null,
+                'gender' => $user['gender'] ?? null,
+                'password' => $user['password'] ?? Str::random(10),
+                'billing' => [
+                    'first_name' => $user['first_name'] ?? null,
+                    'last_name' => $user['last_name'] ?? null,
+                    'email' => $user['email'] ?? null,
+                    'phone' => $phone,
+                    'address_1' => $address['address_1'] ?? '',
+                    'address_2' => $address['address_2'] ?? '',
+                    'city' => $address['city'] ?? '',
+                    'state' => $address['state'] ?? '',
+                    'country' => $address['country'] ?? '',
+                ],
+                'shipping' => [
+                    'first_name' => $user['first_name'] ?? null,
+                    'last_name' => $user['last_name'] ?? null,
+                    'address_1' => $address['address_1'] ?? '',
+                    'address_2' => $address['address_2'] ?? '',
+                    'city' => $address['city'] ?? '',
+                    'state' => $address['state'] ?? '',
+                    'country' => $address['country'] ?? '',
+                ],
+            ];
+
+            $woocommerceUrl = 'https://3.73.173.183/wp-json/wc/v3/customers';
+            $consumerKey = 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51';
+            $consumerSecret = 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e';
+            $response = Http::withOptions([
+                'verify' => false
+            ])->withBasicAuth($consumerKey, $consumerSecret)
+                ->withHeaders([
+                    'Content-Type' => 'application/json',
+                ])
+                ->post($woocommerceUrl, $payload);
+
+            return  $customer = $response->json();
+        }
+        return ($customer);
+    }
+    
+    
+    // Beauty Show
+    // Get All Posts
+   public function getAllPosts()
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/get-posts/', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+
+        $posts = $response->json();
+
+
+        return    $transformedPosts = collect($posts)->map(function ($post) {
+            // Extract product IDs safely
+            $productIds = collect($post['products'])
+                ->filter() // removes null or empty strings
+                ->flatMap(function ($item) {
+                    return explode(',', $item);
+                })
+                ->map(fn($id) => (int) trim($id))
+                ->unique()
+                ->toArray();
+
+            // Fetch products from the database
+            $products = Product::whereIn('id', $productIds)->get();
+
+            // Replace products field with actual product data
+            $post['products'] = SinglePostResource::collection($products);
+
+
+
+            $follow = false;
+            // Check if user is authenticated and liked the post
+            if (auth()->check()) {
+
+                $inf = $post['user']['user_id'];
+                $followersInfluencers = $this->followersInfluencers();
+
+                foreach ($followersInfluencers as $item) {
+                    if (!empty($item)) {
+                        foreach ($item as $influencer) {
+
+                            if ($influencer =  $inf) {
+                                $follow = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            $post['follow'] = $follow;
+            $post['user']['follow'] = $follow;
+            
+               if (isset($post['file_urls']) && is_array($post['file_urls'])) {
+                $post['file_urls'] = array_map(function ($url) {
+                    return str_replace('3.73.173.183', 'centerialmall.com', $url);
+                }, $post['file_urls']);
+            }
+            return $post;
+        });
+    }
+
+
+      // Get Single Post
+    public function getSinglePost($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/single-post/', [
+            'content_id' => $id,
+        ]);
+     $post = $response->json();
+       if (!$response->successful() || !isset($post['content'])) {
+            return response()->json(['message' => 'Content not found'], 404);
+        }
+   
+        // Extract and map products
+        $productIds = collect($post['content'][0]['products'])
+            ->filter()
+            ->flatMap(fn($item) => explode(',', $item))
+            ->map(fn($id) => (int) trim($id))
+            ->unique()
+            ->toArray();
+
+        $products = Product::whereIn('id', $productIds)->get();
+
+        $liked = false;
+        $saved = false;
+        // Check if user is authenticated and liked the post
+        if (auth()->check()) {
+            $likedPosts = $this->likedContents();
+
+            if (
+                isset($likedPosts['contents']) &&
+                collect($likedPosts['contents'])->pluck('content_id')->contains((string) $id)
+            ) {
+                $liked = true;
+            }
+
+            $savedPosts = $this->savedContents();
+
+            if (
+                isset($savedPosts['contents']) &&
+                collect($savedPosts['contents'])->pluck('content_id')->contains((string) $id)
+            ) {
+                $saved = true;
+            }
+        }
+
+        // Final response structure
+        $post['content'][0]['products'] = SinglePostResource::collection($products);
+        $post['content'][0]['Liked'] = $liked;
+        $post['content'][0]['Saved'] = $saved;
+        // Replace product IDs with actual product data
+        $post['products'] = $products;
+
+        return response()->json($post);
+    }
+
+    
+       // Get All Comments
+    public function getAllComments($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/comments', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'content_id' => $id
+        ]);
+
+     if (!$response->successful()) {
+    return response()->json([
+        'status' => 'success',
+        'comments' => []
+    ]);
+}
+
+
+        return   $comments = $response->json() ?? [];
+    }
+    
+        // Get influencer Followers  And Following
+    public function getInfluencerFollowersAndFollowing($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/follower-count/', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'user_id' => $id
+        ]);
+
+        if (!$response->successful()) {
+            return [];
+        }
+
+        $response1 = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/following-count/', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+            'user_id' => $id
+        ]);
+
+        if (!$response1->successful()) {
+            return [];
+        }
+        $followings = $response1->json() ?? [];
+        $followers = $response->json() ?? [];
+
+        return response()->json([
+            'followings' => $followings,
+            'followers' => $followers
+        ]);
+    }
+    
+        // Get All Stores
+  public function getAllStores()
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/wp-story/v1/box/27820', [
+            'consumer_key' => 'ck_3ac0df7ec455715d7173bef920c7a779ac907c51',
+            'consumer_secret' => 'cs_03ea5e697c1d25a77c5f578cf8a88593ba3c1d4e',
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+        $data = $response->json();
+
+        return      $transformed = collect($data['circles'] ?? [])->map(function ($circle) {
+            return [
+                'authorName' => $circle['authorName'] ?? null,
+                'coverImage' => $circle['coverImage'] ?? null,
+                'coverAuthorImage' => $circle['coverAuthorImage'] ?? null,
+                'authorImage' => $circle['authorImage'] ?? null,
+                'coverName' => $circle['coverName'] ?? null,
+                'type' => $circle['type'] ?? null,
+                'items' => collect($circle['items'] ?? [])->map(function ($item) {
+                    return [
+                        'type' => $item['type'] ?? null,
+                        'src' => $item['src'] ?? null,
+                        'product' => $item['button']['link'] ?? null,
+                    ];
+                })->toArray()
+            ];
+        });
+    }
+    
+       // Like Post
+    public function likePost($id)
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        return     $response = Http::withOptions([
+            'verify' => false
+        ])->post('https://3.73.173.183/wp-json/procontent/v1/like-toggle/', [
+            'user_id' => $customer['id'],
+            'content_id' => $id,
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+        $data = $response->json();
+    }
+    
+      // Save Post
+    public function savePost($id)
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->post('https://3.73.173.183/wp-json/procontent/v1/save-toggle/', [
+            'user_id' => $customer['id'],
+            'content_id' => $id,
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+        return  $data = $response->json();
+    }
+    
+        // Save Comment
+    public function saveComment($id, $comment)
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->post('https://3.73.173.183/wp-json/procontent/v1/submit-comment/', [
+            'user_id' => $customer['id'],
+            'content_id' => $id,
+            'comment_text' => $comment
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+        return  $data = $response->json();
+    }
+    
+      // nested Comment
+    public function nestedComment($content_id, $parent_id, $comment)
+    {
+        // dd($content_id, $parent_id, $comment);
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+         $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+          $response = Http::withOptions([
+            'verify' => false
+        ])->post('https://3.73.173.183/wp-json/procontent/v1/submit-comment/', [
+            'user_id' => $customer['id'],
+            'content_id' => $content_id,
+            'parent_id' => $parent_id,
+            'comment_text' => $comment
+        ]);
+
+        if (!$response->successful()) {
+            return null;
+        }
+        return  $data = $response->json();
+    }
+    
+        // Follow User
+    public function followUser($id)
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->post('https://3.73.173.183/wp-json/procontent/v1/follow_unfollow_user/', [
+            'user_id' => $customer['id'],
+            'followed_user_id' => $id,
+        ]);
+
+        if ($response->json() == "Cannot follow yourself") {
+            return response()->json([
+                "status" => 404,
+                'success' => false,
+                'message' => "Cannot follow yourself",
+
+            ], 404);
+        }
+        return  $data = $response->json();
+    }
+    
+     // User Contents
+  public function userContents($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/user-contents', [
+            'user_id' => $id ?? "86"
+        ]);
+
+        if (!$response->successful()) {
+            return $response;
+        }
+
+
+
+        $contents = $response->json() ?? [];
+        return $transformedContents = collect($contents)->map(function ($post) {
+            // Extract product IDs safely
+           $productIds = collect($post['product_ids'] ?? [])
+    ->filter() // removes null or empty strings
+    ->flatMap(function ($item) {
+        return explode(',', $item);
+    })
+    ->map(fn($id) => (int) trim($id))
+    ->unique()
+    ->toArray();
+
+// Fetch products from the database
+$products = Product::whereIn('id', $productIds)->get();
+
+// Replace products field with actual product data
+$post['product_ids'] = SinglePostResource::collection($products);
+   if (isset($post['file_urls']) && is_array($post['file_urls'])) {
+                $post['file_urls'] = array_map(function ($url) {
+                    return str_replace('3.73.173.183', 'centerialmall.com', $url);
+                }, $post['file_urls']);
+            }
+return $post;
+
+        });
+    }
+    
+    // User Products
+ public function userProducts($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/user-products', [
+            'user_id' => $id ?? "86"
+        ]);
+
+        if (!$response->successful()) {
+            return $response;
+        }
+
+        $products = $response->json() ?? [];
+
+        return    $transformedProducts = collect($products)->map(function ($product) {
+
+            if (isset($product['link'])) {
+                $product['link'] = str_replace('3.73.173.183', 'centerialmall.com',  $product['link']);
+            }
+            if (isset($product['image'])) {
+                $product['image'] = str_replace('3.73.173.183', 'centerialmall.com',  $product['image']);
+            }
+            return $product;
+        });
+    }
+    
+      //  Liked Contents
+    public function likedContents()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/liked-content/', [
+            'user_id' => $customer['id'],
+        ]);
+
+     $data = $response->json();
+
+        if (isset($data['contents']) && is_array($data['contents'])) {
+            $data['contents'] = array_map(function ($item) {
+                if (isset($item['file_url'])) {
+                    $item['file_url'] = str_replace('3.73.173.183', 'centerialmall.com', $item['file_url']);
+                }
+                return $item;
+            }, $data['contents']);
+        }
+
+        return $data;
+    }
+    //  Saved Contents
+    public function savedContents()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/saved-content/', [
+            'user_id' => $customer['id'],
+        ]);
+
+   $data = $response->json();
+
+        if (isset($data['contents']) && is_array($data['contents'])) {
+            $data['contents'] = array_map(function ($item) {
+                if (isset($item['file_url'])) {
+                    $item['file_url'] = str_replace('3.73.173.183', 'centerialmall.com', $item['file_url']);
+                }
+                return $item;
+            }, $data['contents']);
+        }
+
+        return $data;
+    }
+    
+     // followersInfluencers
+    public function followersInfluencers()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/following-influencers/', [
+            'user_id' => $customer['id'],
+        ]);
+
+        $data = $response->json();
+        return $data['influencers'];
+    }
+
+    // all influencres
+  public function allInfluencers()
+    {
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/all-influencers');
+
+        $authId = Auth::id();
+
+        $users = User::when($authId, fn($q) => $q->where('id', '!=', $authId))->where('type', 'customer')->get();
+        if (Auth::check()) {
+            $followedIds = FollowRequest::where('status', 'pending')
+                ->where('follower_id', $authId)->pluck('followed_id')->toArray();
+            $friendIds = UserFriend::where('user_id', $authId)->pluck('friend_id')->toArray();
+
+            $users = $users->map(function ($user) use ($followedIds, $friendIds) {
+                return [
+                    'id' => $user->id,
+                    'name' => $user->username,
+                    'phone' => $user->phone,
+                    'email' => $user->email,
+                        'is_private' => $user->is_private,
+                     'profile_photo' => null,
+                    'follow_request' => in_array($user->id, $followedIds),
+                    'friend' => in_array($user->id, $friendIds),
+                ];
+            })->toArray();
+        } else {
+            // Not authenticated — always return false for both
+            $users = $users->map(function ($user) {
+                return [
+                    'id' => $user->id,
+                    'name' => $user->username,
+                    'phone' => $user->phone,
+                    'email' => $user->email,
+                        'is_private' => $user->is_private,
+                    'follow_request' => false,
+                    'friend' => false,
+                ];
+            })->toArray();
+        }
+        // 2. Decode the external response
+        $responseData = $response->json();
+        $remoteInfluencers = $responseData['influencers'] ?? [];
+        $remoteInfluencers = collect($remoteInfluencers)->map(function ($influencer) {
+            $influencer['type'] = 'influencer';
+            return $influencer;
+        })->toArray();
+
+        // 3. Merge local users with external influencers
+        $allInfluencers = array_merge($remoteInfluencers, $users);
+
+        // 4. Update the influencers list
+        $responseData['influencers'] = $allInfluencers;
+
+        // 5. Return the updated response
+        return response()->json($responseData);
+    }
+    
+     // followedInfluencers
+
+  public function followedInfluencersPosts()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/all-follower-post/', [
+            'user_id' => $customer['id'],
+        ]);
+
+        $posts = $response->json();
+
+
+        return    $transformedPosts = collect($posts)->map(function ($post) {
+            // Extract product IDs safely
+            $productIds = collect($post['products'])
+                ->filter() // removes null or empty strings
+                ->flatMap(function ($item) {
+                    return explode(',', $item);
+                })
+                ->map(fn($id) => (int) trim($id))
+                ->unique()
+                ->toArray();
+
+            // Fetch products from the database
+            $products = Product::whereIn('id', $productIds)->get();
+
+            // Replace products field with actual product data
+            $post['products'] = SinglePostResource::collection($products);
+
+
+            $follow = false;
+            // Check if user is authenticated and liked the post
+            if (auth()->check()) {
+
+                $inf = $post['user']['user_id'];
+                $followersInfluencers = $this->followersInfluencers();
+
+                foreach ($followersInfluencers as $item) {
+                    if (!empty($item)) {
+                        foreach ($item as $influencer) {
+
+                            if ($influencer =  $inf) {
+                                $follow = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            $post['follow'] = $follow;
+            $post['user']['follow'] = $follow;
+            // $follow = false;
+            // // Check if user is authenticated and liked the post
+            // if (auth()->check()) {
+
+            //     $inf = $post['user']['user_id'];
+            //     $followersInfluencers = $this->followersInfluencers();
+
+            //     foreach ($followersInfluencers as $item) {
+            //         if (!empty($item)) {
+            //             foreach ($item as $influencer) {
+
+            //                 if ($influencer =  $inf) {
+            //                     $follow = true;
+            //                 }
+            //             }
+            //         }
+            //     }
+            // }
+
+
+             if (isset($post['file_urls']) && is_array($post['file_urls'])) {
+                $post['file_urls'] = array_map(function ($url) {
+                    return str_replace('3.73.173.183', 'centerialmall.com', $url);
+                }, $post['file_urls']);
+            }
+            return $post;
+        });
+    }
+    
+       // Get All Collections
+
+    public function getAllCollections()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+     $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/collections/', [
+            'user_id' => $customer['id'],
+        ]);
+
+        return  $collections = $response->json();
+    }
+    
+    
+    
+    // Influencers
+
+
+    // Get Influencer Posts
+    public function getInfluencerPosts()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/user-contents/', [
+            'user_id' => $customer['id'],
+        ]);
+
+        return  $posts = $response->json();
+    }
+
+
+    // Create Post
+   public function createPost($data)
+    {
+        // return ($data['description']);
+        $user = auth()->user();
+        // $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $multipartData = [
+            [
+                'name' => 'user_id',
+                'contents' => 86 ?? $customer['id'],
+            ],
+            [
+                'name' => 'description',
+                'contents' => $data['description'] ?? '',
+            ],
+            [
+                'name' => 'product_ids',
+                'contents' => $data['product_ids'] ?? '',
+            ],
+
+        ];
+
+
+   
+        foreach ($data['media'] ?? [] as $file) {
+            if ($file instanceof \Illuminate\Http\UploadedFile && $file->isValid()) {
+                $multipartData[] = [
+                    'name'     => 'content_media[]',
+                    'contents' => fopen($file->getPathname(), 'r'),
+                    'filename' => $file->getClientOriginalName(),
+                ];
+            }
+        }
+        // return $multipartData;
+        $response = Http::withOptions([
+            'verify' => false,
+        ])->asMultipart()->post('https://3.73.173.183/wp-json/procontent/v1/create-post/', $multipartData);
+
+
+        if ($response->json() == "Cannot follow yourself") {
+            return response()->json([
+                "status" => 404,
+                'success' => false,
+                'message' => "Cannot follow yourself",
+
+            ], 404);
+        }
+           $data = $response->json();
+               if (isset($data['media_urls']) && is_array($data['media_urls'])) {
+            $data['media_urls'] = array_map(function ($url) {
+                return str_replace('3.73.173.183', 'centerialmall.com', $url);
+            }, $data['media_urls']);
+        }
+
+        return $data;
+    }
+
+
+    // Get Influencer Products
+    public function getInfluencerProducts()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/user-products/', [
+            'user_id' => $customer['id'],
+        ]);
+
+        return  $products = $response->json();
+    }
+
+
+    // Get Influencer Banner
+    public function getInfluencerProfile()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get('https://3.73.173.183/wp-json/procontent/v1/profile/', [
+            'user_id' => $customer['id'],
+        ]);
+
+           $profile = $response->json();
+        if (isset($profile['profile_photo']) && !empty($profile['profile_photo'])) {
+            $profile['profile_photo'] =  str_replace('3.73.173.183', 'centerialmall.com', $profile['profile_photo']);
+        }
+        return   $profile;
+    }
+    
+       // delete Post
+    public function deletePost($id)
+    {
+        $response = Http::withOptions([
+            'verify' => false
+        ])->delete('https://3.73.173.183/wp-json/procontent/v1/delete_content/', [
+            'content_id' => $id,
+        ]);
+        return  $post = $response->json();
+    }
+    
+    
+    // Create Banner
+    public function createBanner($data)
+    {
+        $user = auth()->user();
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $multipartData = [
+            [
+                'name' => 'user_id',
+                'contents' =>  $customer['id'],
+            ],
+
+        ];
+
+        $multipartData[] = [
+            'name'     => 'banner',
+            'contents' => fopen($data['image']->getPathname(), 'r'),
+            'filename' => $data['image']->getClientOriginalName(),
+        ];
+
+        $response = Http::withOptions([
+            'verify' => false,
+        ])->asMultipart()->post('https://3.73.173.183/wp-json/procontent/v1/add_user_banner', $multipartData);
+
+        return  $data = $response->json();
+    }
+
+    // delete Banner
+    public function deleteBanner()
+    {
+
+        $user = auth()->user();
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+        $response = Http::withOptions([
+            'verify' => false
+        ])->delete('https://3.73.173.183/wp-json/procontent/v1/remove_user_banner', [
+            'user_id' => $customer['id'],
+        ]);
+        return  $post = $response->json();
+    }
+    
+    //  update profile picture
+
+
+    public function updateProfilePicture($data)
+    {
+        $user = auth()->user();
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+
+        $multipartData = [
+            [
+                'name' => 'user_id',
+                'contents' =>  $customer['id'],
+            ],
+
+        ];
+
+        $multipartData[] = [
+            'name'     => 'avatar',
+            'contents' => fopen($data['image']->getPathname(), 'r'),
+            'filename' => $data['image']->getClientOriginalName(),
+        ];
+
+        $response = Http::withOptions([
+            'verify' => false,
+        ])->asMultipart()->post('https://3.73.173.183/wp-json/procontent/v1/profile_image', $multipartData);
+
+        return  $data = $response->json();
+    }
+
+    // delete profile picture
+    public function deleteProfilePicture()
+    {
+
+        $user = auth()->user();
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user,   $address);
+        $response = Http::withOptions([
+            'verify' => false
+        ])->delete('https://3.73.173.183/wp-json/procontent/v1/dell_profile_image', [
+            'user_id' => $customer['id'],
+        ]);
+        return  $avatar = $response->json();
+    }
+    
+    
+     // user stories
+    // get user stories
+    public function createUserStory($data)
+    {
+        $user = auth()->user();
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user, $address);
+
+        $multipartData = [
+            [
+                'name' => 'user_id',
+                'contents' => $customer['id'],
+            ],
+
+        ];
+
+        $multipartData[] = [
+            'name' => 'file',
+            'contents' => fopen($data['image']->getPathname(), 'r'),
+            'filename' => $data['image']->getClientOriginalName(),
+        ];
+
+        $response = Http::withOptions([
+            'verify' => false,
+        ])->asMultipart()->post('https://3.73.173.183/wp-json/wpstory/v1/public-stories', $multipartData);
+
+        return $data = $response->json();
+    }
+
+    public function getUserStories()
+    {
+        $user = auth()->user();
+        $data = $user;
+        $data['phone'] = str_replace('+', '', $user->phone);
+        $address = Address2::where('user_id', $user->id)
+            ->where('status', 'active')->where('default', true)
+            ->first();
+        $address = $address ?? [];
+
+        $customer = $this->getUserByPhone($user->email, $user->phone, $user, $address);
+        $id = $customer['id'] ?? 11; // Default to 86 if id is not set
+        $response = Http::withOptions([
+            'verify' => false
+        ])->get("http://3.73.173.183/wp-json/wpstory/v1/public-stories/{$id}");
+
+        return $profile = $response->json();
+    }
+    public function deleteUserStory($id)
+    {
+        // $user = auth()->user();
+        // $data = $user;
+        // $data['phone'] = str_replace('+', '', $user->phone);
+        // $address = Address2::where('user_id', $user->id)
+        //     ->where('status', 'active')->where('default', true)
+        //     ->first();
+        // $address = $address ?? [];
+
+        // $customer = $this->getUserByPhone($user->email, $user->phone, $user, $address);
+
+        $response = Http::withOptions([
+            'verify' => false
+        ])->delete("https://3.73.173.183/wpstory/v1/public-stories/{$id}");
+
+        return $profile = $response->json();
+    }
+
+}

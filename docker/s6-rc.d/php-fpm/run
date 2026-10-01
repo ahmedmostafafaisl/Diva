@@ -1,0 +1,4 @@
+#!/command/execlineb -P
+# Start php-fpm
+#php-fpm
+/usr/local/sbin/php-fpm --nodaemonize
