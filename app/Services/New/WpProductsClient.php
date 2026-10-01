@@ -15,14 +15,45 @@ class WpProductsClient
         ]);
 
         if (! $res->successful()) {
-            // رجع array فاضي بدل ما تكسر الـ API بتاعك
+            \Log::warning('WP productsByCategory failed', [
+                'category' => $categoryId,
+                'status' => $res->status(),
+                'body' => $res->body(),
+            ]);
+
             return [];
         }
 
         $json = $res->json();
 
-        // الـ endpoint بتاعك بيرجع Array مباشرة حسب اللي انت باعته قبل كده
-        return is_array($json) ? $json : [];
+        if (! is_array($json)) {
+            return [];
+        }
+
+        // Wrapped response: {"products": [...]} or {"data": [...]}
+        if (isset($json['products']) && is_array($json['products'])) {
+            $json = $json['products'];
+        } elseif (isset($json['data']) && is_array($json['data']) && array_is_list($json['data'])) {
+            $json = $json['data'];
+        }
+
+        // Single product object instead of a list
+        if (! array_is_list($json)) {
+            if (isset($json['id'])) {
+                $json = [$json];
+            } else {
+                // Error/message object, e.g. {"code": "...", "message": "..."}
+                \Log::warning('WP productsByCategory unexpected payload', [
+                    'category' => $categoryId,
+                    'body' => $json,
+                ]);
+
+                return [];
+            }
+        }
+
+        // Keep only real product rows
+        return array_values(array_filter($json, fn ($p) => is_array($p) && isset($p['id'])));
     }
 
     public function singleProductV2(int $productId): array
@@ -34,16 +65,46 @@ class WpProductsClient
         ]);
 
         if (! $res->successful()) {
+            \Log::warning('WP singleProductV2 failed', [
+                'product_id' => $productId,
+                'status' => $res->status(),
+                'body' => $res->body(),
+            ]);
+
             return [];
         }
 
         $json = $res->json();
 
-        // ✅ new response: [ { ... } ]
-        if (is_array($json) && isset($json[0]) && is_array($json[0])) {
-            return $json[0];
+        if (! is_array($json)) {
+            return [];
         }
 
-        return is_array($json) ? $json : [];
+        // Unwrap common shapes: {"product": {...}}, {"data": {...}} or {"data": [{...}]}
+        foreach (['product', 'data'] as $key) {
+            if (isset($json[$key]) && is_array($json[$key])) {
+                $json = $json[$key];
+                break;
+            }
+        }
+
+        // [ {...} ]
+        if (array_is_list($json)) {
+            $json = (isset($json[0]) && is_array($json[0])) ? $json[0] : [];
+        }
+
+        // Normalize the id key
+        $json['id'] = $json['id'] ?? $json['Id'] ?? $json['ID'] ?? $json['product_id'] ?? null;
+
+        if (empty($json['id'])) {
+            \Log::warning('WP singleProductV2 unexpected payload', [
+                'product_id' => $productId,
+                'body' => $res->json(),
+            ]);
+
+            return [];
+        }
+
+        return $json;
     }
 }
