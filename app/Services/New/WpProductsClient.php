@@ -2,70 +2,100 @@
 
 namespace App\Services\New;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class WpProductsClient
 {
+    /**
+     * Max items the new endpoint returns per page.
+     * We loop over pages until has_more = false.
+     */
+    private const COMMERCE_PER_PAGE = 100;
+
+    /** Safety cap so a bad has_more flag can never loop forever. */
+    private const COMMERCE_MAX_PAGES = 50;
+
+    /**
+     * Get ALL products of a category from the new endpoint:
+     * https://diva.sa/wp-json/diva-commerce/v1/products
+     *
+     * Response shape:
+     * { items: [...], page, per_page, total, total_pages, has_more, includes: {...} }
+     */
     public function productsByCategory(int $categoryId): array
     {
-        $base = rtrim(config('services.wp.base'), '/');
+        $ttl = (int) config('services.wp.commerce_cache_ttl', 300);
 
-        $res = Http::timeout(15)->get("$base/products-by-category-s", [
-            'category_ids' => $categoryId,
-        ]);
+        return Cache::remember(
+            "wp:commerce:products:cat:{$categoryId}",
+            $ttl,
+            fn () => $this->fetchAllPages($categoryId)
+        );
+    }
 
-        if (! $res->successful()) {
-            \Log::warning('WP productsByCategory failed', [
-                'category' => $categoryId,
-                'status' => $res->status(),
-                'body' => $res->body(),
+    private function fetchAllPages(int $categoryId): array
+    {
+        $base = rtrim((string) config('services.wp.commerce_base'), '/');
+        $categoryParam = (string) config('services.wp.commerce_category_param', 'category');
+
+        $items = [];
+        $page = 1;
+
+        do {
+            $res = Http::timeout(20)->acceptJson()->get("$base/products", [
+                $categoryParam => $categoryId,
+                'page' => $page,
+                'per_page' => self::COMMERCE_PER_PAGE,
             ]);
 
-            return [];
-        }
-
-        $json = $res->json();
-
-        if (! is_array($json)) {
-            return [];
-        }
-
-        // Wrapped response: {"products": [...]} or {"data": [...]}
-        if (isset($json['products']) && is_array($json['products'])) {
-            $json = $json['products'];
-        } elseif (isset($json['data']) && is_array($json['data']) && array_is_list($json['data'])) {
-            $json = $json['data'];
-        }
-
-        // Single product object instead of a list
-        if (! array_is_list($json)) {
-            if (isset($json['id'])) {
-                $json = [$json];
-            } else {
-                // Error/message object, e.g. {"code": "...", "message": "..."}
-                \Log::warning('WP productsByCategory unexpected payload', [
+            if (! $res->successful()) {
+                Log::warning('WP commerce products failed', [
                     'category' => $categoryId,
-                    'body' => $json,
+                    'page' => $page,
+                    'status' => $res->status(),
+                    'body' => mb_substr($res->body(), 0, 1000),
                 ]);
-
-                return [];
+                break;
             }
-        }
 
-        // Keep only real product rows
-        return array_values(array_filter($json, fn ($p) => is_array($p) && isset($p['id'])));
+            $json = $res->json();
+
+            if (! is_array($json) || ! isset($json['items']) || ! is_array($json['items'])) {
+                Log::warning('WP commerce products unexpected payload', [
+                    'category' => $categoryId,
+                    'page' => $page,
+                    'body' => mb_substr($res->body(), 0, 1000),
+                ]);
+                break;
+            }
+
+            foreach ($json['items'] as $p) {
+                if (is_array($p) && isset($p['id'])) {
+                    $items[] = $p;
+                }
+            }
+
+            $hasMore = (bool) ($json['has_more'] ?? false);
+            $totalPages = (int) ($json['total_pages'] ?? $page);
+            $page++;
+        } while (($hasMore || $page <= $totalPages) && $page <= self::COMMERCE_MAX_PAGES);
+
+        // De-duplicate by id (just in case pages overlap)
+        return array_values(array_column($items, null, 'id'));
     }
 
     public function singleProductV2(int $productId): array
     {
-        $base = rtrim(config('services.wp.base'), '/');
+        $base = rtrim((string) config('services.wp.base'), '/');
 
         $res = Http::timeout(15)->get("$base/single-product-v2/", [
             'product_id' => $productId,
         ]);
 
         if (! $res->successful()) {
-            \Log::warning('WP singleProductV2 failed', [
+            Log::warning('WP singleProductV2 failed', [
                 'product_id' => $productId,
                 'status' => $res->status(),
                 'body' => $res->body(),
@@ -97,7 +127,7 @@ class WpProductsClient
         $json['id'] = $json['id'] ?? $json['Id'] ?? $json['ID'] ?? $json['product_id'] ?? null;
 
         if (empty($json['id'])) {
-            \Log::warning('WP singleProductV2 unexpected payload', [
+            Log::warning('WP singleProductV2 unexpected payload', [
                 'product_id' => $productId,
                 'body' => $res->json(),
             ]);

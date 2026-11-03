@@ -11,6 +11,7 @@ use App\Http\Resources\Refactor\SubCategory\SubCategoryResource;
 use App\Models\SubCategory;
 use App\Repositories\Interfaces\SubCategoryRepositoryInterface;
 use App\Services\CenterialMallService;
+use App\Services\New\DivaCollectionsService;
 use App\Services\New\WpProductsClient;
 use App\Transformers\WpProductToEditedTransformer;
 use Illuminate\Http\Request;
@@ -104,26 +105,20 @@ class SubCategoryController extends Controller
             ? $user->cart->products->pluck('product_id')->all()
             : [];
 
-        // 1) get original products by category id from WP
+        // 1) get ALL products of this subcategory from the new diva-commerce API (cached)
         $original = collect($wp->productsByCategory((int) $id));
+
         // 2) optional intersect with parent category products (لو category_id مبعوت)
         if ($categoryId) {
-            $parentOriginal = collect($wp->productsByCategory($categoryId));
-            $parentIds = $parentOriginal->pluck('id')->filter()->values()->all();
+            $parentIds = collect($wp->productsByCategory($categoryId))
+                ->pluck('id')->filter()->values()->all();
 
             $original = $original->filter(fn ($p) => in_array($p['id'] ?? null, $parentIds));
         }
 
-        // ✅ 3) REMOVED lenses-only filter (allow empty type_of_product too)
         $original = $original->values();
 
-        // 4) transform to edited schema
-        $transformed = $original->map(fn ($p) => WpProductToEditedTransformer::transform($p, [
-            'wishlist_ids' => $wishlistIds,
-            'cart_ids' => $cartIds,
-        ]));
-
-        // 5) brands/new_brands/plus (على مستوى subcategory)
+        // 3) brands/new_brands/plus (على مستوى subcategory كلها)
         $brands = $original->pluck('brand_name')->filter()->unique()->values()->all();
 
         $new_brands = $original
@@ -138,15 +133,17 @@ class SubCategoryController extends Controller
 
         $plus = ['الترتيب', 'العلامات التجاريه'];
 
-        // 6) paginate manually
-        $total = $transformed->count();
+        // 4) paginate first, then transform only the current page
+        $total = $original->count();
         $totalPages = (int) ceil($total / $perPage);
-        $data = $transformed->forPage($page, $perPage)->values();
 
-        // pagination metadata in response
-        $total = $transformed->count();
-        $totalPages = (int) ceil($total / $perPage);
-        $data = $transformed->forPage($page, $perPage)->values();
+        $data = $original
+            ->forPage($page, $perPage)
+            ->map(fn ($p) => WpProductToEditedTransformer::transform($p, [
+                'wishlist_ids' => $wishlistIds,
+                'cart_ids' => $cartIds,
+            ]))
+            ->values();
 
         return $this->setCode(200)->setData([
             'id' => $subCategory->id,
@@ -165,6 +162,123 @@ class SubCategoryController extends Controller
                 'count' => $data->count(),
                 'total_pages' => $totalPages,
             ],
+        ])->setMessage('success')->send();
+    }
+
+    /**
+     * GET /ref/subcategories/{id}/collections
+     * Same products as newShow(), grouped into sections:
+     * products of the month, most popular, then one section per Diva collection.
+     */
+    public function collections(Request $request, $id, WpProductsClient $wp, DivaCollectionsService $collections)
+    {
+        $subCategory = SubCategory::with('images')->find($id);
+
+        if (! $subCategory || ! in_array((int) $id, [211, 137, 322])) {
+            return $this->setCode(404)
+                ->setData([])
+                ->setMessage('SubCategory not found or invalid ID')
+                ->send();
+        }
+
+        // user wishlist/cart ids (true/false)
+        $user = Auth::user();
+        $wishlistIds = ($user && $user->wishlist)
+            ? $user->wishlist->products->pluck('product_id')->all()
+            : [];
+
+        $cartIds = ($user && $user->cart)
+            ? $user->cart->products->pluck('product_id')->all()
+            : [];
+
+        // all products of this subcategory (cached in WpProductsClient)
+        $original = collect($wp->productsByCategory((int) $id))->values();
+
+        $likes = $collections->likesCount($original->pluck('id')->filter()->all());
+
+        $context = [
+            'wishlist_ids' => $wishlistIds,
+            'cart_ids' => $cartIds,
+            'likes' => $likes,
+        ];
+
+        $transform = function (array $p) use ($collections, $context) {
+            $item = WpProductToEditedTransformer::transform($p, $context);
+            $item['collection'] = $collections->collectionKeyFor($p['sku'] ?? null) ?? 'other';
+            $item['lens_name'] = $collections->lensNameFor($p['sku'] ?? null);
+
+            return $item;
+        };
+
+        $cfg = config('diva_collections');
+        $products = $original->all();
+
+        $sections = [];
+
+        // 1) Products of the Month (random, fixed for the whole month)
+        $sections[] = [
+            'key' => 'products_of_the_month',
+            'title' => $cfg['products_of_the_month']['title'],
+            'title_ar' => $cfg['products_of_the_month']['title_ar'],
+            'products' => array_map(
+                $transform,
+                $collections->productsOfTheMonth($products, (int) $cfg['products_of_the_month']['limit'])
+            ),
+        ];
+
+        // 2) Most Popular (by wishlist count)
+        $sections[] = [
+            'key' => 'most_popular',
+            'title' => $cfg['most_popular']['title'],
+            'title_ar' => $cfg['most_popular']['title_ar'],
+            'products' => array_map(
+                $transform,
+                $collections->mostPopular($products, $likes, (int) $cfg['most_popular']['limit'])
+            ),
+        ];
+
+        // 3..6) Her Diva, Chic Diva, Miss Diva, Diva (+ Other for unmatched SKUs)
+        $grouped = $original->groupBy(fn ($p) => $collections->collectionKeyFor($p['sku'] ?? null) ?? 'other');
+
+        foreach ($cfg['collections'] as $key => $collection) {
+            $sections[] = [
+                'key' => $key,
+                'title' => $collection['title'],
+                'title_ar' => $collection['title_ar'],
+                'products' => $grouped->get($key, collect())->map($transform)->values()->all(),
+            ];
+        }
+
+        if ($grouped->has('other')) {
+            $sections[] = [
+                'key' => 'other',
+                'title' => $cfg['other']['title'],
+                'title_ar' => $cfg['other']['title_ar'],
+                'products' => $grouped->get('other')->map($transform)->values()->all(),
+            ];
+        }
+
+        $new_brands = $original
+            ->filter(fn ($p) => ! empty($p['brand_name']))
+            ->unique('brand_name')
+            ->map(fn ($p) => [
+                'name' => $p['brand_name'],
+                'image' => $p['brand_image_url'] ?? null,
+            ])
+            ->values()
+            ->all();
+
+        return $this->setCode(200)->setData([
+            'id' => $subCategory->id,
+            'gate_id' => (int) $subCategory->gate_id,
+            'name' => (string) $subCategory->name,
+            'desc' => (string) $subCategory->desc,
+            'images' => $subCategory->images->map(fn ($img) => asset('storage/'.$img->image)),
+            'brands' => $original->pluck('brand_name')->filter()->unique()->values()->all(),
+            'new_brands' => $new_brands,
+            'plus' => ['الترتيب', 'العلامات التجاريه'],
+            'total_products' => $original->count(),
+            'sections' => $sections,
         ])->setMessage('success')->send();
     }
 }

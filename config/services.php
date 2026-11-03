@@ -31,18 +31,24 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
     'firebase' => [
-        'credentials' => "/serviceAccount.json", // Or use the path from .env
+        'credentials' => '/serviceAccount.json', // Or use the path from .env
     ],
 
     'wp' => [
-    'base' => env('WP_API_BASE', ''),
-],
-'tabby' => [
-    'base_url' => env('TABBY_BASE_URL', 'https://api.tabby.ai/api/v2/'),
-    'secret_key' => env('TABBY_SECRET_KEY'),
-],
-'tamara' => [
-    'base_url' => env('TAMARA_BASE_URL'),
-    'token' => env('TAMARA_TOKEN'),
-],
+        // old procontent API (single-product-v2, etc.)
+        'base' => env('WP_API_BASE', ''),
+
+        // new diva-commerce API (products listing)
+        'commerce_base' => env('WP_COMMERCE_API_BASE', 'https://diva.sa/wp-json/diva-commerce/v1'),
+        'commerce_category_param' => env('WP_COMMERCE_CATEGORY_PARAM', 'category'),
+        'commerce_cache_ttl' => (int) env('WP_COMMERCE_CACHE_TTL', 300),
+    ],
+    'tabby' => [
+        'base_url' => env('TABBY_BASE_URL', 'https://api.tabby.ai/api/v2/'),
+        'secret_key' => env('TABBY_SECRET_KEY'),
+    ],
+    'tamara' => [
+        'base_url' => env('TAMARA_BASE_URL'),
+        'token' => env('TAMARA_TOKEN'),
+    ],
 ];

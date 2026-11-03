@@ -8,7 +8,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
-
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -25,8 +24,6 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
 });
 
-
-
 Route::get('/testenv', function () {
 
     if (env('APP_ENV') == 'local') {
@@ -38,23 +35,17 @@ Route::get('/testenv', function () {
     }
 });
 
-
-
-//////// tamara ///////////////////
+// ////// tamara ///////////////////
 
 Route::get('/payment/pre_checkout', [PaymentController::class, 'pre_checkout']);
-
 
 Route::post('/payment/create', [PaymentController::class, 'createOrderFromApp'])->name('payment.create');
 
 Route::get('/payment/handle', [PaymentController::class, 'handle']);
 
-
-
 Route::post('/payment/authorize', [PaymentController::class, 'authorizeOrder'])->name('payment.authorize');
 
 Route::post('/payment/capture', [PaymentController::class, 'captureOrder'])->name('payment.capture');
-
 
 // Route::get('/payment/success', function () {
 //     return 'Payment successful!';
@@ -70,30 +61,21 @@ Route::post('/payment/capture', [PaymentController::class, 'captureOrder'])->nam
 
 Route::get('/payment/notification', [PaymentController::class, 'handleNotification'])->name('payment.notification');
 
-
 Route::get('/payment/checkMerchantStatus', [PaymentController::class, 'checkMerchantStatus'])->name('payment.checkMerchantStatus');
 
+// // Zon
 
-//// Zon
-
-////// feature/appointment_or_subscription_without_invoice_id ///////////////////
+// //// feature/appointment_or_subscription_without_invoice_id ///////////////////
 Route::get('/app/subs/non_invoice', action: [PaymentController::class, 'non_invoice']);
-
 
 Route::get('/status', function () {
     return response()->json(['status' => 'ok'], 200);
 });
 
-
-
-
 Route::get('/tabby/checkout', [TabbyPaymentController::class, 'createCheckout'])->name('tabby.checkout');
 //
 
 Route::post('tabby/session/status', [PaymentController::class, 'getPaymentStatus']);
-
-
-
 
 Route::match(['get', 'post'], '/WhatsApp/receive', function (Request $request) {
     Log::info('📩 WhatsApp POST payload', $request->all());
@@ -106,10 +88,12 @@ Route::match(['get', 'post'], '/WhatsApp/receive', function (Request $request) {
 
         if ($mode === 'subscribe' && $token === '00IZCYL5Ab1vafxxKfc6ihAMxTz4cVQH') {
             Log::info('✅ WhatsApp webhook verified successfully.');
+
             return response($challenge, 200);
         }
 
         Log::error('❌ Invalid verify token');
+
         return response('Verification token mismatch', 403);
     }
 
@@ -119,8 +103,9 @@ Route::match(['get', 'post'], '/WhatsApp/receive', function (Request $request) {
 
     $entry = $data['entry'][0]['changes'][0]['value'] ?? null;
 
-    if (!$entry) {
+    if (! $entry) {
         Log::warning('⚠️ No entry data found in webhook payload.');
+
         return response()->json(['status' => 'ok']);
     }
 
@@ -142,8 +127,8 @@ Route::match(['get', 'post'], '/WhatsApp/receive', function (Request $request) {
         }
 
         // Log the basic info
-        Log::info('📞 WhatsApp message from: ' . $from);
-        Log::info('📝 Message content: ' . $text);
+        Log::info('📞 WhatsApp message from: '.$from);
+        Log::info('📝 Message content: '.$text);
 
         // ✅ Try to extract structured data (like your payload format)
         preg_match_all('/(\w+):([^\n]+)/u', $text, $matches, PREG_SET_ORDER);
@@ -157,15 +142,12 @@ Route::match(['get', 'post'], '/WhatsApp/receive', function (Request $request) {
 
         Log::info('📋 Parsed WhatsApp payload', $parsed);
 
-
     }
 
     return response()->json(['status' => 'ok']);
 });
 
-
-
-//new
+// new
 Route::get('/tamara/success/reference_id={reference_id}', [TamaraNewPaymentController::class, 'newSuccess'])->name('new.tamara.success');
 Route::post('/tamara/notification/reference_id={reference_id}', [TamaraNewPaymentController::class, 'newNotification'])->name('new.tamara.notification');
 Route::get('/tamara/cancel/reference_id={reference_id}', [TamaraNewPaymentController::class, 'newCancel'])->name('new.tamara.cancel');

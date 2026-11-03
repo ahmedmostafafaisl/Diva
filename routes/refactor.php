@@ -335,6 +335,8 @@ Route::post('/tamara/notification/reference_id={reference_id}', [TamaraPaymentCo
 
 // new show route for subcategory with products
 Route::get('/ref/subcategories/{id}/products', [SubCategoryController::class, 'newShow']);
+Route::get('/ref/subcategories/{id}/collections', [SubCategoryController::class, 'collections'])
+    ->whereNumber('id');
 // new show single product with subcategory
 // Route::get('/ref/products/{id}/sync', [ProductController::class, 'showWithWooSync']);
 Route::get('/ref/products/{id}/sync', [ProductController::class, 'showWithWooSync'])
