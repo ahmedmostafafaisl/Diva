@@ -1,3 +1,0 @@
-#!/command/execlineb -P
-/managed-agents/execute-command/amazon-ssm-agent
-/managed-agents/execute-command/ssm-agent-worker

@@ -46,6 +46,12 @@ return [
     'tabby' => [
         'base_url' => env('TABBY_BASE_URL', 'https://api.tabby.ai/api/v2/'),
         'secret_key' => env('TABBY_SECRET_KEY'),
+        // Base URL Tabby redirects to: {base}cancel, {base}failure, {base}success
+        'merchant_urls_base' => env('TABBY_MERCHANT_URLS_BASE'),
+    ],
+    'payments' => [
+        // Shown to Tabby / Tamara as the merchant platform name
+        'platform' => env('PAYMENT_PLATFORM_NAME', 'Diva'),
     ],
     'tamara' => [
         'base_url' => env('TAMARA_BASE_URL'),
