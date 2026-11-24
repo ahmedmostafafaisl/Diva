@@ -6,24 +6,24 @@ use App\Helper\ApiResponseHelper;
 use App\Models\Address2;
 use App\Models\Cart;
 use App\Models\Order;
-use App\Models\TabbyPayment;
-use App\Models\TamaraPayment;
 use App\Repositories\Interfaces\CartRepositoryInterface;
 use App\Repositories\Interfaces\OrderRepositoryInterface;
+use App\Services\FirebaseNotificationService;
 use App\Services\Payments\PaymentGateway;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class OrderRepository extends OrderRepositoryInterface
 {
- use ApiResponseHelper;
+    use ApiResponseHelper;
+
     protected $firebaseNotificationService;
 
     protected $wooService;
 
     protected $cartRepository;
 
-     public function __construct(CartRepositoryInterface $cartRepository, FirebaseNotificationService $firebaseNotificationService, WooOrderService $wooService,   private PaymentGateway $payments)
+    public function __construct(CartRepositoryInterface $cartRepository, FirebaseNotificationService $firebaseNotificationService, WooOrderService $wooService, private PaymentGateway $payments)
     {
         $this->wooService = $wooService;
         $this->cartRepository = $cartRepository;
@@ -38,6 +38,7 @@ class OrderRepository extends OrderRepositoryInterface
         if ($status == 'previous') {
             return Order::whereIn('status', ['completed', 'canceled'])->with('products')->get();
         }
+
         return Order::with('products')->get();
     }
 
@@ -45,9 +46,6 @@ class OrderRepository extends OrderRepositoryInterface
     {
         return Order::with('products')->findOrFail($id);
     }
-
-
-
 
     public function update($id, array $data)
     {
@@ -63,18 +61,19 @@ class OrderRepository extends OrderRepositoryInterface
         }
 
         if (isset($user)) {
-            if (!empty($user->fcm_token)) {
+            if (! empty($user->fcm_token)) {
                 $title = $request->title ?? ' تحديث طلبك   ';
-                $body =  $request->body ?? ' تم تحديث طلبك';
+                $body = $request->body ?? ' تم تحديث طلبك';
                 $data = [
                     'order_id' => $order->id,
                     'order_status' => $order->status,
                     'order_total' => $order->total_price,
                     'order_date' => $order->created_at,
                 ];
-                $response = $this->firebaseNotificationService->sendNotification($user->fcm_token,  $user->id, $title, $body, $data ?? []);
+                $response = $this->firebaseNotificationService->sendNotification($user->fcm_token, $user->id, $title, $body, $data ?? []);
             }
         }
+
         return $order;
     }
 
@@ -86,14 +85,14 @@ class OrderRepository extends OrderRepositoryInterface
     public function getAuthUserOrders($status)
     {
         $user = auth()->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
         $phone = str_replace('+', '', $user->phone);
 
         $orderData = $this->wooService->getOrderByPhone($phone);
         // return $this->setCode(code: 200)->setData($orderData)->setMessage('success')->send();
-        if (empty($orderData) || !is_array($orderData)) {
+        if (empty($orderData) || ! is_array($orderData)) {
             return $this->setCode(code: 200)->setData($orderData)->setMessage('success')->send();
         }
         $statusMap = [
@@ -121,7 +120,7 @@ class OrderRepository extends OrderRepositoryInterface
         ];
 
         // Make sure the status key exists
-        if (!array_key_exists($status, $statusMap)) {
+        if (! array_key_exists($status, $statusMap)) {
             return []; // or throw exception or return all if you want
         }
 
@@ -129,26 +128,28 @@ class OrderRepository extends OrderRepositoryInterface
         $filteredOrders = collect($orderData)->filter(function ($order) use ($statusMap, $status) {
             return in_array($order['status'], $statusMap[$status]);
         })->values()->all();
+
         return $this->setCode(code: 200)->setData($filteredOrders)->setMessage('success')->send();
 
         if ($status == 'current') {
             return Order::where('user_id', auth()->id())->whereIn('status', ['pending', 'shipped'])->with('products')->get();
         } elseif ($status == 'previous') {
             return Order::where('user_id', auth()->id())->whereIn('status', ['completed', 'canceled'])->with('products')->get();
-        } else
+        } else {
             return Order::where('user_id', auth()->id())->get();
+        }
     }
 
     public function store(array $data)
     {
-        if (!auth()->check()) {
+        if (! auth()->check()) {
             return $this->setCode(401)->setData([])->setMessage('Unauthorized')->send();
         }
 
         $user = auth()->user();
 
         $cart = Cart::where('user_id', $user->id)->with('products.product')->first();
-        if (!$cart) {
+        if (! $cart) {
             return $this->setCode(404)->setData([])->setMessage('Cart not found')->send();
         }
 
@@ -158,7 +159,7 @@ class OrderRepository extends OrderRepositoryInterface
         }
 
         $address = Address2::where('user_id', $user->id)->where('default', 1)->first();
-        if (!$address) {
+        if (! $address) {
             return $this->setCode(404)->setData([])->setMessage('Default address not found')->send();
         }
 
@@ -185,8 +186,8 @@ class OrderRepository extends OrderRepositoryInterface
             $productTax = 0.15 * $price * $quantity;
             $totalTax += $productTax;
 
-            if (!is_null($regular) && !is_null($sale) && (float)$regular != (float)$sale) {
-                $totalDiscount += ((float)$regular - (float)$sale) * $quantity;
+            if (! is_null($regular) && ! is_null($sale) && (float) $regular != (float) $sale) {
+                $totalDiscount += ((float) $regular - (float) $sale) * $quantity;
             }
         }
 
@@ -241,7 +242,6 @@ class OrderRepository extends OrderRepositoryInterface
                 ]);
             }
 
-            // ✅ امسح الكارت مباشرة بعد إنشاء الأوردر
             $cart->products()->delete();
         });
 
@@ -249,6 +249,7 @@ class OrderRepository extends OrderRepositoryInterface
         // Apple Pay => send to Woo immediately
         if ($paymentMethod === 'apple_pay') {
             $woo = $this->sendToWooIfNeeded($order);
+
             return $this->setCode(200)->setData([
                 'order_id' => $order->id,
                 'payment_status' => $order->payment_status,
@@ -260,8 +261,7 @@ class OrderRepository extends OrderRepositoryInterface
         // Tabby/Tamara => init checkout inside create order
         $checkout = $this->payments->initCheckout($paymentMethod, $order, $user, $address, $products);
 
-        if (!empty($checkout['extra']['error'])) {
-            // فشل إنشاء Checkout => نخلي الدفع failed (أو pending حسب رغبتك)
+        if (! empty($checkout['extra']['error'])) {
             $order->update([
                 'payment_status' => 'failed',
             ]);
@@ -294,10 +294,10 @@ class OrderRepository extends OrderRepositoryInterface
 
     private function sendToWooIfNeeded(Order $order): array
     {
-        if (!in_array($order->payment_status, ['paid'], true)) {
+        if (! in_array($order->payment_status, ['paid'], true)) {
             return ['sent' => false, 'reason' => 'payment_not_paid'];
         }
-        if (!empty($order->woo_order_id)) {
+        if (! empty($order->woo_order_id)) {
             return ['sent' => false, 'reason' => 'already_sent', 'woo_order_id' => $order->woo_order_id];
         }
 
