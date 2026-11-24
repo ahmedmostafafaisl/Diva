@@ -27,8 +27,6 @@ use App\Http\Controllers\Refactor\User\UserDataController;
 use App\Http\Controllers\Refactor\User\UserFriendController;
 use App\Http\Controllers\Refactor\User\UserProductListController;
 use App\Http\Controllers\Refactor\Wishlist\WishlistController;
-use App\Http\Controllers\Refactor\Zone\ShippingController;
-use App\Http\Controllers\Refactor\Zone\ZoneController;
 use App\Http\Controllers\TabbyPaymentController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -183,10 +181,7 @@ Route::prefix('ref')->group(function () {
     });
 
     Route::get('/products-by-category', [CenterialController::class, 'getProductsByCategory']);
-    // Zone
-    Route::apiResource('zones', ZoneController::class);
-    // Shippings
-    Route::apiResource('shippings', ShippingController::class);
+
     // user - data
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/user-data', [UserDataController::class, 'store']);
