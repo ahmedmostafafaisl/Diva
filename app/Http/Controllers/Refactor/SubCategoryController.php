@@ -202,12 +202,25 @@ class SubCategoryController extends Controller
             'likes' => $likes,
         ];
 
-        $transform = function (array $p) use ($collections, $context) {
-            $item = WpProductToEditedTransformer::transform($p, $context);
-            $item['collection'] = $collections->collectionKeyFor($p['sku'] ?? null) ?? 'other';
-            $item['lens_name'] = $collections->lensNameFor($p['sku'] ?? null);
+        // Only these product fields are returned by this endpoint (in this order)
+        $fields = [
+            'id', 'name', 'slug', 'sku', 'stock_status',
+            'description', 'short_description',
+            'type_of_product', 'classification', 'brand', 'brand_image',
+            'display_price', 'price', 'sale_price', 'regular_price',
+            'discount', 'discount_percentage', 'variation_type',
+            'likes_count', 'wishlist', 'cart', 'type', 'images',
+        ];
 
-            return $item;
+        $transform = function (array $p) use ($context, $fields) {
+            $item = WpProductToEditedTransformer::transform($p, $context);
+
+            $out = [];
+            foreach ($fields as $field) {
+                $out[$field] = $item[$field] ?? null;
+            }
+
+            return $out;
         };
 
         $cfg = config('diva_collections');
@@ -215,14 +228,26 @@ class SubCategoryController extends Controller
 
         $sections = [];
 
-        // 1) Products of the Month (random, fixed for the whole month)
+        // 1) Products of the Month: discounted products only
+        //    (random, fixed for the whole month)
+        $requiredDiscount = $cfg['products_of_the_month']['discount_percentage'] ?? null;
+        $requiredDiscount = ($requiredDiscount === null || $requiredDiscount === '') ? null : (float) $requiredDiscount;
+
+        $discounted = array_values(array_filter($products, function (array $p) use ($context, $requiredDiscount) {
+            $percent = (float) (WpProductToEditedTransformer::transform($p, $context)['discount_percentage'] ?? 0);
+
+            return $requiredDiscount === null
+                ? $percent > 0
+                : abs($percent - $requiredDiscount) < 0.01;
+        }));
+
         $sections[] = [
             'key' => 'products_of_the_month',
             'title' => $cfg['products_of_the_month']['title'],
             'title_ar' => $cfg['products_of_the_month']['title_ar'],
             'products' => array_map(
                 $transform,
-                $collections->productsOfTheMonth($products, (int) $cfg['products_of_the_month']['limit'])
+                $collections->productsOfTheMonth($discounted, (int) $cfg['products_of_the_month']['limit'])
             ),
         ];
 
