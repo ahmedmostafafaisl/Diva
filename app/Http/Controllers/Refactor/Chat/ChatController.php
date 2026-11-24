@@ -2,13 +2,12 @@
 
 namespace App\Http\Controllers\Refactor\Chat;
 
-use App\Models\Message;
-use App\Models\ChatRoom;
-use App\Events\MessageSent;
-use Illuminate\Http\Request;
 use App\Events\GroupRoomUpdated;
+use App\Events\MessageSent;
 use App\Http\Controllers\Controller;
-use Illuminate\Support\Facades\Storage;
+use App\Models\ChatRoom;
+use App\Models\Message;
+use Illuminate\Http\Request;
 
 class ChatController extends Controller
 {
@@ -20,8 +19,10 @@ class ChatController extends Controller
         ]);
 
         $room->users()->sync($request->user_ids); // for private/group
+
         return $room;
     }
+
     public function getMessages($roomId)
     {
         return Message::where('chat_room_id', $roomId)
@@ -39,14 +40,14 @@ class ChatController extends Controller
 
         // 1. Find a private room with exactly the two users
         $room = ChatRoom::where('type', 'private')
-            ->whereHas('users', fn($q) => $q->where('user_id', $authId))
-            ->whereHas('users', fn($q) => $q->where('user_id', $userId))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $authId))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $userId))
             ->withCount('users')
             ->having('users_count', '=', 2)
             ->first();
 
         // 2. No room? return error
-        if (!$room) {
+        if (! $room) {
             return response()->json(['message' => 'No room found'], 404);
         }
 
@@ -65,7 +66,7 @@ class ChatController extends Controller
         ]);
     }
 
-    //send message to a user in a private chat room
+    // send message to a user in a private chat room
     public function sendMessage(Request $request)
     {
         $request->validate([
@@ -79,10 +80,9 @@ class ChatController extends Controller
 
         if ($fromUserId === $toUserId) {
             return response()->json([
-                'message' => 'You cannot send a message to yourself.'
+                'message' => 'You cannot send a message to yourself.',
             ], 422);
         }
-
 
         // Get or create private room with exactly 2 users
         $room = $this->getOrCreatePrivateRoom($fromUserId, $toUserId);
@@ -104,14 +104,13 @@ class ChatController extends Controller
         ]);
     }
 
-
     // get single chat messages
     protected function getOrCreatePrivateRoom($userId1, $userId2): ChatRoom
     {
         // Step 1: Try to find a private room that has exactly these two users
         $existingRoom = ChatRoom::where('type', 'private')
-            ->whereHas('users', fn($q) => $q->where('user_id', $userId1))
-            ->whereHas('users', fn($q) => $q->where('user_id', $userId2))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $userId1))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $userId2))
             ->withCount('users')
             ->get()
             ->firstWhere('users_count', 2); // must have exactly 2 users
@@ -122,7 +121,7 @@ class ChatController extends Controller
 
         // Step 2: Create the room if not found
         $room = ChatRoom::create([
-            'type' => 'private'
+            'type' => 'private',
         ]);
 
         $room->users()->attach([$userId1, $userId2]);
@@ -152,17 +151,17 @@ class ChatController extends Controller
         // ✅ Private: return existing room if found
         if ($type === 'private') {
             $room = ChatRoom::where('type', 'private')
-                ->whereHas('users', fn($q) => $q->where('user_id', $authUser->id))
-                ->whereHas('users', fn($q) => $q->whereIn('user_id', $request->user_ids))
+                ->whereHas('users', fn ($q) => $q->where('user_id', $authUser->id))
+                ->whereHas('users', fn ($q) => $q->whereIn('user_id', $request->user_ids))
                 ->withCount('users')
                 ->get()
-                ->filter(fn($room) => $room->users_count === 2)
+                ->filter(fn ($room) => $room->users_count === 2)
                 ->first();
 
             if ($room) {
                 return response()->json([
                     'message' => 'Private room already exists',
-                    'room_id' => $room->id
+                    'room_id' => $room->id,
                 ]);
             }
         }
@@ -176,9 +175,9 @@ class ChatController extends Controller
         ]);
         if ($request->hasFile('image')) {
             $file = $request->file('image');
-            $filename = time() . '_' . $file->getClientOriginalName();
+            $filename = time().'_'.$file->getClientOriginalName();
             $file->move(public_path('chat_rooms'), $filename);
-            $room->image = 'chat_rooms/' . $filename;
+            $room->image = 'chat_rooms/'.$filename;
         }
 
         $room->users()->attach($participantIds);
@@ -189,7 +188,7 @@ class ChatController extends Controller
             'name' => $room->name,
             'image_url' => $room->image,
             'type' => $type,
-'users' => collect($participantIds)->map(fn($id) => (int) $id)->values(),
+            'users' => collect($participantIds)->map(fn ($id) => (int) $id)->values(),
 
         ]);
     }
@@ -209,7 +208,7 @@ class ChatController extends Controller
             ->get();
 
         return response()->json([
-            'rooms' => $rooms
+            'rooms' => $rooms,
         ]);
     }
 
@@ -229,7 +228,7 @@ class ChatController extends Controller
             return response()->json(['message' => 'Not a group room'], 403);
         }
 
-        if (!$room->users->contains($user->id)) {
+        if (! $room->users->contains($user->id)) {
             return response()->json(['message' => 'You are not a member of this room'], 403);
         }
 
@@ -245,17 +244,16 @@ class ChatController extends Controller
 
         return response()->json([
             'message' => 'Message sent successfully',
-            'data' => $message->load('user')
+            'data' => $message->load('user'),
         ]);
     }
-
 
     // update group chat room
 
     public function updateGroupRoom(Request $request, $roomId)
     {
         $request->validate([
-            'name'  => 'nullable|string|max:255',
+            'name' => 'nullable|string|max:255',
             'image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
         ]);
 
@@ -263,7 +261,7 @@ class ChatController extends Controller
 
         $room = ChatRoom::where('id', $roomId)
             ->where('type', 'group')
-            ->whereHas('users', fn($q) => $q->where('user_id', $authUser->id))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $authUser->id))
             ->firstOrFail();
 
         if ($request->has('name')) {
@@ -272,31 +270,30 @@ class ChatController extends Controller
 
         if ($request->hasFile('image')) {
             $file = $request->file('image');
-            $filename = time() . '_' . $file->getClientOriginalName();
+            $filename = time().'_'.$file->getClientOriginalName();
             $file->move(public_path('chat_rooms'), $filename);
-            $room->image = 'chat_rooms/' . $filename;
+            $room->image = 'chat_rooms/'.$filename;
         }
         $room->save();
 
-
         // Broadcast the updated room event
         broadcast(new GroupRoomUpdated($room))->toOthers();
+
         return response()->json([
             'message' => 'Chat room updated',
             'room' => [
                 'id' => $room->id,
                 'name' => $room->name,
                 'image_url' => $room->image,
-            ]
+            ],
         ]);
     }
-
 
     // add users to group chat room
     public function addUsersToRoom(Request $request, $roomId)
     {
         $request->validate([
-            'user_ids'   => 'required|array',
+            'user_ids' => 'required|array',
             'user_ids.*' => 'exists:users,id',
         ]);
 
@@ -304,7 +301,7 @@ class ChatController extends Controller
 
         $room = ChatRoom::where('id', $roomId)
             ->where('type', 'group')
-            ->whereHas('users', fn($q) => $q->where('user_id', $authUser->id))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $authUser->id))
             ->firstOrFail();
 
         $room->users()->syncWithoutDetaching($request->user_ids);
@@ -316,7 +313,7 @@ class ChatController extends Controller
     public function removeUsersFromRoom(Request $request, $roomId)
     {
         $request->validate([
-            'user_ids'   => 'required|array',
+            'user_ids' => 'required|array',
             'user_ids.*' => 'exists:users,id',
         ]);
 
@@ -324,7 +321,7 @@ class ChatController extends Controller
 
         $room = ChatRoom::where('id', $roomId)
             ->where('type', 'group')
-            ->whereHas('users', fn($q) => $q->where('user_id', $authUser->id))
+            ->whereHas('users', fn ($q) => $q->where('user_id', $authUser->id))
             ->firstOrFail();
 
         $room->users()->detach($request->user_ids);
